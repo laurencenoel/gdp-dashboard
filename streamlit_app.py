@@ -1,151 +1,174 @@
 import streamlit as st
+
 import pandas as pd
-import math
-from pathlib import Path
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
-
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
-
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
+import plotly.express as px
+import re
 
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
 
-st.header(f'GDP in {to_year}', divider='gray')
 
-''
+def guess_column_types(file_path, delimiter=',', has_headers=True):
+    try:
+        # Read the CSV file using the specified delimiter and header settings
+        df = pd.read_csv(file_path, sep=delimiter, header=0 if has_headers else None)
 
-cols = st.columns(4)
+        # Initialize a dictionary to store column data types
+        column_types = {}
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+        dtype_map = {
+         'integer': 'int64',
+          'floating': 'float64',
+           'string': 'string',
+          'unicode': 'object',
+          'bytes': 'object',
+          'boolean': 'bool',
+          'datetime': 'datetime64[ns]',
+          'date': 'datetime64[ns]',
+          'timedelta': 'timedelta64[ns]',
+          'complex': 'complex128',
+          'mixed': 'object',
+          'mixed-integer': 'object',
+         'mixed-integer-float': 'float64',
+         'empty': 'object',
+        }
 
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
+        # Loop through columns and infer data types
+        for column in df.columns:
+            # sample_values = df[column].dropna().sample(min(5, len(df[column])), random_state=42)
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+            # Check for datetime format "YYYY-MM-DD HH:MM:SS"
+            is_datetime = all(re.match(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', str(value)) for value in df[column])
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+            # Check for date format "YYYY-MM-DD"
+            is_date = all(re.match(r'\d{4}-\d{2}-\d{2}', str(value)) for value in df[column])
+
+            # Assign data type based on format detection
+            if is_datetime:
+                target_dtype = 'datetime64[ns]'
+            elif is_date:
+                target_dtype = 'datetime64[ns]'
+            else:
+                inferred_type = pd.api.types.infer_dtype(df[column], skipna=True)
+                target_dtype = dtype_map.get(inferred_type, 'object')
+
+            column_types[column] = target_dtype
+
+        return (True, column_types)  # Return success and column types
+    except pd.errors.ParserError:
+        return (False, str(e))  # Return error message
+
+
+# Title
+
+st.title("Simple Chart Viewer with CSV upload")
+
+
+
+# Upload data
+
+uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
+
+if uploaded_file is None:
+
+    st.stop()
+
+# Read the first line from the uploaded file (as a file-like object)
+header_line = uploaded_file.readline().decode('utf-8')
+
+# Reset the file pointer to the beginning so it can be read again later
+uploaded_file.seek(0)
+
+# Determine separator based on counts in the header line
+sep = ',' if header_line.count(',') > header_line.count(';') else ';'
+
+# Reset the file pointer to the beginning so it can be read again later
+uploaded_file.seek(0)
+
+# Determine column types
+success, column_types = guess_column_types(uploaded_file, sep, has_headers=True)
+# Reset the file pointer to the beginning so it can be read again later
+uploaded_file.seek(0)
+
+st.write("Type:", column_types)
+
+# Load data
+
+df = pd.read_csv(uploaded_file, sep=sep, dtype=column_types)
+#st.write("Data Preview", df)
+st.write("Info:", df.info())
+
+st.write("Header Preview:", df.head())
+
+
+
+# Select plot type
+
+plot_type = st.selectbox("Select plot type", ["Bar Plot", "Pie Chart"])
+
+
+
+# Select x and y axes (for bar plot)
+
+if plot_type == "Bar Plot":
+
+    idx = df.applymap(lambda x: isinstance(x, str)).all(0)
+    #if header_line.contains('year|Year') : 
+       # y_index= df.index("Year")
+      
+    st.write("Header Preview:", idx)
+
+
+    x_axis = st.selectbox("Select x-axis", df.columns[idx])
+    st.write("X:", x_axis)
+
+    y_axis = st.selectbox("Select y-axis", df.columns[~idx])
+
+    stack_by = st.selectbox("Group by (optional)", ["None"] + list(df.columns[idx]))
+
+    #distinct = st.checkbox("Show distinct values only")
+
+    #only keep the columns of interest
+    if stack_by != "None":
+
+        df_filtered = df[[x_axis,y_axis,stack_by]].copy()
+
+    else :
+        df_filtered = df[[x_axis,y_axis]].copy()
+
+    # Group by x_axis and calculate mean
+    df_result = df_filtered.groupby(x_axis, as_index=False)[y_axis].mean()
+
+    #if distinct:
+
+       # df = df.drop_duplicates(subset=[x_axis])
+
+
+
+    #if stack_by != "None":
+
+        #df = df.groupby(stack_by).sum(numeric_only=True).reset_index()
+
+
+
+    fig = px.bar(df_result, x=x_axis, y=y_axis, title=f"{y_axis} by {x_axis}")
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+
+# Select fields for pie chart
+
+elif plot_type == "Pie Chart":
+
+    names = st.selectbox("Select names", df.columns)
+
+    values = st.selectbox("Select values", df.columns)
+
+    fig = px.pie(df, names=names, values=values, title=f"Pie Chart of {values} by {names}")
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+
+
